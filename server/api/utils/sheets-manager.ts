@@ -1,7 +1,7 @@
 // server/utils/sheets-manager.ts
 import { getGoogleSheetsClient, obterDadosSheet, adicionarLinhaSheet } from './sheets';
 import { formatarData } from './extrator';
-import configPadrao from '../../../config/finzap.json';
+import configPadrao from '../../../config/keywords.json';
 
 // Classe para gerenciar operações em planilhas
 export class SheetManager {

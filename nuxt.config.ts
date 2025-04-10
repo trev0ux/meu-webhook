@@ -8,8 +8,13 @@ export default defineNuxtConfig({
     googleServiceAccountEmail: process.env.GOOGLE_SERVICE_ACCOUNT_EMAIL,
     googlePrivateKey: process.env.GOOGLE_PRIVATE_KEY,
     googleSheetId: process.env.GOOGLE_SHEET_ID,
+    postgresUser: process.env.POSTGRES_USER,
+    postgresHost: process.env.POSTGRES_HOST,
+    postgresDb: process.env.POSTGRES_DB,
+    postgresPassword: process.env.POSTGRES_PASSWORD,
+    postgresPort: process.env.POSTGRES_PORT,
     public: {
-      apiBaseUrl: process.env.API_BASE_URL || 'http://localhost:3000'
+      apiBaseUrl: process.env.API_BASE_URL || 'http://localhost:3002'
     }
   },
 
@@ -26,7 +31,7 @@ export default defineNuxtConfig({
   // Configuração de desenvolvimento
   devServer: {
     // Permitir conexões de qualquer host
-    port: 3000,
+    port: 3002,
     host: '0.0.0.0' // Isso é importante para permitir acessos externos
   },
   compatibilityDate: '2025-04-07'

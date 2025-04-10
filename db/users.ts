@@ -22,22 +22,29 @@ export interface EstadoConversa {
 }
 
 // Buscar usuário por telefone
-export async function buscarUsuario(telefone: string): Promise<Usuario | null> {
-  const resultado = await db.query(
-    'SELECT * FROM usuarios WHERE telefone = $1',
-    [telefone]
-  );
-  
-  if (resultado.rows.length > 0) {
-    // Atualizar último acesso
-    await db.query(
-      'UPDATE usuarios SET ultimo_acesso = CURRENT_TIMESTAMP WHERE id = $1',
-      [resultado.rows[0].id]
-    );
-    return resultado.rows[0];
+// server/utils/usuarios.ts
+
+export async function findUser(telefone: string): Promise<Usuario | null> {
+
+
+  try {
+    const resultado = await db.query('SELECT * FROM usuarios WHERE telefone = $1', [telefone.replace(/^whatsapp:/, '')]);
+
+    
+    if (resultado.rows.length > 0) {
+      // Atualizar último acesso
+      await db.query(
+        'UPDATE usuarios SET ultimo_acesso = CURRENT_TIMESTAMP WHERE id = $1',
+        [resultado.rows[0].id]
+      );
+      return resultado.rows[0] as Usuario;
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Erro ao buscar usuário:', error);
+    throw error;
   }
-  
-  return null;
 }
 
 // Criar novo usuário

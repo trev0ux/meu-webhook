@@ -1,11 +1,29 @@
 // server/utils/extrator.ts
 export function extrairValor(texto: string): number {
-  const regexValor = /R\$\s?(\d+(?:[,.]\d+)?)/i
-  const match = texto.match(regexValor)
+  const textoNormalizado = (texto || '').trim().toLowerCase()
   
-  if (match && match[1]) {
-    const valorNormalizado = match[1].replace(',', '.')
-    return parseFloat(valorNormalizado)
+  const padroes = [
+    /r\$\s?(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)/,
+    
+    /(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)\s*$/,
+    
+    /(\d+(?:[.,]\d{1,2})?)\s*$/
+  ]
+  
+  for (const regex of padroes) {
+    const match = textoNormalizado.match(regex)
+    
+    if (match) {
+      let valorCapturado = match[1]
+      
+      valorCapturado = valorCapturado.replace(',', '.')
+      
+      valorCapturado = valorCapturado.replace(/\./g, '')
+      
+      const valor = parseFloat(valorCapturado)
+      
+      return isNaN(valor) ? 0 : valor
+    }
   }
   
   return 0

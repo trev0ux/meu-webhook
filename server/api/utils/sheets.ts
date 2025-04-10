@@ -1,6 +1,6 @@
 // server/utils/sheets.ts
 import { google } from 'googleapis'
-import configPadrao from '../../../config/finzap.json'
+import configPadrao from '../../../config/keywords.json'
 
 // Função para autenticar no Google Sheets
 export async function getGoogleSheetsClient() {

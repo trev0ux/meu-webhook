@@ -1,17 +1,26 @@
 // db/index.ts
-import { Pool } from 'pg';
+import pkg from 'pg';
+const { Pool } = pkg;
 
+let pool: pkg.Pool | null = null;
 
-const config = useRuntimeConfig();
-
-const pool = new Pool({
-  user: config.postgresUser,
-  host: config.postgresHost,
-  database: config.postgresDb,
-  password: config.postgresPassword,
-  port: parseInt(config.postgresPort || '5432'),
-});
+export function initializeDatabase(config: any) {
+    pool = new Pool({
+      user: config.postgresUser || 'postgres',
+      host: config.postgresHost || 'localhost',
+      database: config.postgresDb || 'postgres',
+      password: config.postgresPassword || '7894',
+      port: parseInt(config.postgresPort || '5432'),
+    });
+  
+  return pool;
+}
 
 export default {
-  query: (text: string, params?: any[]) => pool.query(text, params),
+  query: async (text: string, params?: any[]) => {
+    if (!pool) {
+      throw new Error('Database pool not initialized');
+    }
+    return pool.query(text, params);
+  }
 };
