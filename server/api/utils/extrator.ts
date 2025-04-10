@@ -1,26 +1,47 @@
-// server/utils/extrator.ts
 export function extrairValor(texto: string): number {
-  const textoNormalizado = (texto || '').trim().toLowerCase()
+  // Se não houver texto, retorna 0
+  if (!texto) return 0
 
+  const textoNormalizado = texto.trim().toLowerCase()
+
+  // Diferentes padrões para capturar valores monetários
   const padroes = [
-    /r\$\s*(\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?)/i,
-    /(\d+(?:[.,]\d{3})*(?:[.,]\d{1,2})?)\s*$/,
-    /(\d+(?:[.,]\d+)?)\s*$/
+    // Padrão com R$: "R$ 1.234,56" ou "R$1234.56"
+    /r\$\s*(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:,\d{1,2})?|\d+(?:\.\d{1,2})?|\d+)/i,
+
+    // Padrão sem R$ no final da string: "texto 1.234,56" ou "texto 1234.56"
+    /(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:,\d{1,2})?|\d+(?:\.\d{1,2})?)\s*$/,
+
+    // Padrão para capturar valores numéricos em qualquer posição
+    /\b(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?|\d+(?:,\d{1,2})?|\d+(?:\.\d{1,2})?|\d+)\b/
   ]
 
+  // Verificar cada padrão na ordem definida
   for (const regex of padroes) {
-    const match = textoNormalizado.match(regex)
+    const matches = textoNormalizado.match(new RegExp(regex, 'g')) || []
 
-    if (match) {
-      let valorCapturado = match[1]
+    if (matches.length > 0) {
+      // Para cada match encontrado
+      for (const matchStr of matches) {
+        const match = matchStr.match(regex) // rematching para capturar o grupo
 
-      valorCapturado = valorCapturado.replace(',', '.')
+        if (match && match[1]) {
+          let valorCapturado = match[1]
 
-      valorCapturado = valorCapturado.replace(/\./g, '')
+          // Primeiro remover separadores de milhares (pontos quando seguidos de 3 dígitos)
+          valorCapturado = valorCapturado.replace(/\.(?=\d{3})/g, '')
 
-      const valor = parseFloat(valorCapturado)
+          // Converter vírgula decimal para ponto
+          valorCapturado = valorCapturado.replace(',', '.')
 
-      return isNaN(valor) ? 0 : valor
+          const valor = parseFloat(valorCapturado)
+
+          // Se não for NaN e for maior que zero, retorna imediatamente
+          if (!isNaN(valor) && valor > 0) {
+            return valor
+          }
+        }
+      }
     }
   }
 

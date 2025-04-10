@@ -1,5 +1,6 @@
 // server/api/utils/input-validator.ts
 import { extrairValor, extrairData } from './extrator'
+import configJson from '../../../config/keywords.json'
 
 /**
  * Interface para os dados extraídos de uma mensagem
@@ -12,6 +13,29 @@ interface InputData {
   erro?: string
 }
 
+export function verificarPalavrasChave(descricao: string): boolean {
+  // Combina todas as palavras-chave conhecidas
+  const todasPalavrasChave = [
+    ...configJson.classificacao.palavrasChavePJ,
+    ...configJson.classificacao.palavrasChavePF,
+    ...configJson.classificacao.palavrasChaveGanhosPJ,
+    ...configJson.classificacao.palavrasChaveGanhosPF
+  ].map((palavra) => palavra.toLowerCase())
+
+  // Normaliza e separa a descrição em palavras
+  const palavrasDescricao = descricao
+    .toLowerCase()
+    .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g, '')
+    .split(/\s+/)
+
+  // Verifica se pelo menos uma palavra da descrição está nas palavras-chave
+  return palavrasDescricao.some((palavra) =>
+    todasPalavrasChave.some(
+      (palavraChave) => palavraChave.includes(palavra) || palavra.includes(palavraChave)
+    )
+  )
+}
+
 /**
  * Valida e extrai dados de uma mensagem no formato:
  * nome/descrição + valor monetário + data (opcional)
@@ -21,7 +45,7 @@ interface InputData {
  */
 export function validarEExtrairDados(mensagem: string): InputData {
   // Padronizar a mensagem
-  const mensagemNormalizada = mensagem.trim()
+  const mensagemNormalizada = mensagem
 
   // Verificar se a mensagem está vazia
   if (!mensagemNormalizada) {
@@ -36,6 +60,7 @@ export function validarEExtrairDados(mensagem: string): InputData {
 
   // Extrair o valor monetário
   const valor = extrairValor(mensagemNormalizada)
+  console.log(valor)
 
   // Se não encontrou valor monetário, a mensagem é inválida
   if (valor === 0) {

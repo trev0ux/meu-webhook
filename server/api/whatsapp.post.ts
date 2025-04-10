@@ -2,7 +2,7 @@ import { defineEventHandler, readBody } from 'h3'
 import { classifyExpense, classifyIncome } from './utils/openai'
 import { formatarData } from './utils/extrator'
 import { validarEExtrairDados, gerarMensagemErroInput } from './utils/input-validator'
-import { detectIsIncome, detectContext } from './utils/message-detector'
+import { detectIsIncome, detectIsExpense, detectContext } from './utils/message-detector'
 import { SheetManager } from './utils/sheets-manager'
 import { findUser } from '../../db/users'
 
@@ -67,7 +67,8 @@ Exemplos:
     console.log('Data extraída:', dataFormatada)
 
     // Detectar se é ganho ou gasto baseado em palavras-chave
-    const isIncome = detectIsIncome(message)
+    const isIncome = detectIsIncome(message, user.perfil)
+    const isExpense = detectIsExpense(message, user.perfil)
 
     try {
       // Classificar como ganho ou gasto dependendo da detecção inicial
@@ -119,7 +120,7 @@ Exemplos:
 
         // Processamento de receita com classificação confiável
         return await processIncomeSuccess(classification, descricao, valor, dataFormatada, user)
-      } else {
+      } else if (isExpense) {
         // Processo para gastos/despesas
         const classification = await classifyExpense(message, user.perfil)
         console.log('Classificação de gasto:', classification)
@@ -171,6 +172,19 @@ Exemplos:
 
         // Processamento de gasto com classificação confiável
         return await processExpenseSuccess(classification, descricao, valor, dataFormatada, user)
+      } else {
+        return `
+        <Response>
+          <Message>⚠️ Não reconheci termos específicos na sua mensagem.
+          
+Por favor, reescreva incluindo palavras como:
+- Para gastos empresariais: cliente, fornecedor, empresa, reunião, material, escritório
+- Para gastos pessoais: casa, mercado, pessoal, família, lazer
+- Para receitas: pagamento, cliente pagou, recebi, salário, freelance
+
+Exemplo: "Almoço com cliente R$ 120" ou "Mercado para casa R$ 250"</Message>
+        </Response>
+      `
       }
     } catch (error) {
       console.error('Erro na classificação:', error)
@@ -248,10 +262,11 @@ async function processExpenseSuccess(
       `
     }
   }
+  console.log(mensagemResposta)
 
   return `
     <Response>
-      <Message>${mensagemResposta.trim()}</Message>
+      <Message>${mensagemResposta}</Message>
     </Response>
   `
 }

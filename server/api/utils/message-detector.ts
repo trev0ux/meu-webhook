@@ -1,55 +1,40 @@
 // server/api/utils/message-detector.ts
+import configJson from '../../../config/keywords.json'
 
 /**
  * Detecta se uma mensagem se refere a uma receita/ganho ou despesa/gasto
  * @param message Mensagem do usuário
  * @returns true se for receita/ganho, false se for despesa/gasto
  */
-export function detectIsIncome(message: string): boolean {
+export function detectIsIncome(message: string, profile: string): boolean {
   const lowerMessage = message.toLowerCase()
 
-  // Palavras-chave que indicam receita/ganho
-  const incomeKeywords = [
-    'recebi',
-    'recebimento',
-    'pagamento',
-    'pagou',
-    'transferiu',
-    'depósito',
-    'entrou',
-    'caiu',
-    'salário',
-    'salario',
-    'freelance',
-    'honorário',
-    'ganho',
-    'fatura',
-    'venda',
-    'rendimento',
-    'aluguel recebido',
-    'dividendo',
-    'comissão',
-    'comissao',
-    'royalties',
-    'prestação serviço',
-    'contrato',
-    'projeto',
-    'freela',
-    'pix recebido',
-    'transferência recebida',
-    'adiantamento',
-    'cliente pagou',
-    'recebeu',
-    'reembolso',
-    'retorno',
-    'lucro',
-    'pró-labore'
-  ]
+  let incomeKeywords = []
+
+  if (profile === 'pessoa_fisica') {
+    incomeKeywords = configJson.classificacao.palavrasChaveGanhosPF
+  } else {
+    incomeKeywords = configJson.classificacao.palavrasChaveGanhosPJ
+  }
 
   // Verificar se alguma palavra-chave de receita está presente
   return incomeKeywords.some((keyword) => lowerMessage.includes(keyword))
 }
 
+export function detectIsExpense(message: string, profile: string): boolean {
+  const lowerMessage = message.toLowerCase()
+
+  let incomeKeywords = []
+
+  if (profile === 'pessoa_fisica') {
+    incomeKeywords = configJson.classificacao.palavrasChavePF
+  } else {
+    incomeKeywords = configJson.classificacao.palavrasChavePJ
+  }
+
+  // Verificar se alguma palavra-chave de receita está presente
+  return incomeKeywords.some((keyword) => lowerMessage.includes(keyword))
+}
 /**
  * Detecta o contexto da mensagem - se é pessoal (PF) ou empresarial (PJ)
  * Útil para mensagens ambíguas
@@ -60,62 +45,8 @@ export function detectContext(message: string): 'PJ' | 'PF' | 'INDEFINIDO' {
   const lowerMessage = message.toLowerCase()
 
   // Palavras-chave que sugerem contexto PJ
-  const pjKeywords = [
-    'empresa',
-    'cliente',
-    'cnpj',
-    'nota fiscal',
-    'contrato',
-    'projeto',
-    'serviço',
-    'consultoria',
-    'fornecedor',
-    'business',
-    'corporativo',
-    'comercial',
-    'b2b',
-    'reunião de negócios',
-    'empreendimento',
-    'escritório',
-    'jurídica',
-    'pj',
-    'profissional',
-    'negócio',
-    'empreendedor',
-    'mei',
-    'empresarial',
-    'prestação',
-    'consultor'
-  ]
-
-  // Palavras-chave que sugerem contexto PF
-  const pfKeywords = [
-    'pessoal',
-    'casa',
-    'família',
-    'filhos',
-    'supermercado',
-    'lazer',
-    'restaurante',
-    'cinema',
-    'shopping',
-    'academia',
-    'roupas',
-    'celular pessoal',
-    'faculdade',
-    'férias',
-    'hobby',
-    'presente',
-    'física',
-    'pf',
-    'particular',
-    'privado',
-    'doméstico',
-    'residencial',
-    'apartamento',
-    'condomínio',
-    'iptu'
-  ]
+  const pjKeywords = configJson.classificacao.palavrasChavePJ
+  const pfKeywords = configJson.classificacao.palavrasChavePF
 
   // Contar ocorrências de palavras-chave
   const pjCount = pjKeywords.filter((keyword) => lowerMessage.includes(keyword)).length
