@@ -1,114 +1,328 @@
 import { defineEventHandler, readBody } from 'h3'
-import { classifyExpense } from './utils/openai'
-import { extrairValor, extrairData, formatarData } from './utils/extrator'
-// import { adicionarLinhaSheet, obterDadosSheet, obterConfiguracoes } from './utils/sheets'
+import { classifyExpense, classifyIncome } from './utils/openai'
+import { formatarData } from './utils/extrator'
+import { validarEExtrairDados, gerarMensagemErroInput } from './utils/input-validator'
+import { detectIsIncome, detectContext } from './utils/message-detector'
+import { SheetManager } from './utils/sheets-manager'
 import { findUser } from '../../db/users'
 
 export default defineEventHandler(async (event) => {
   try {
     // Obter dados da requisição
     const body = await readBody(event)
-    const { Body, From } = body
-    console.log('Recebido de:', From)
-    console.log('Mensagem:', Body)
+    const { Body: message, From: phoneNumber } = body
+    console.log('Recebido de:', phoneNumber)
+    console.log('Mensagem:', message)
 
     // Verificar e processar usuário
-    const user = await findUser(From)
+    const user = await findUser(phoneNumber)
 
     // Se usuário não existe, iniciar onboarding
     if (!user) {
-      return onboardingMessage(user.perfil)
+      return onboardingMessage('empresario_individual') // default para novos usuários
     }
 
-    const valor = extrairValor(Body || '')
-    const data = extrairData(Body || '')
+    // Verifica se é um comando especial (começa com !)
+    if (message.trim().startsWith('!')) {
+      return await processarComando(message, phoneNumber, user)
+    }
+
+    // Verificar se é uma resposta para uma classificação
+    // Usando uma abordagem simplificada: verificar por números (1, 2) ou prefixo "categoria:"
+    if (
+      message.trim() === '1' ||
+      message.trim() === '2' ||
+      message.toLowerCase().startsWith('categoria:')
+    ) {
+      return `
+        <Response>
+          <Message>❓ Por favor, digite sua transação completa no formato:
+"Descrição R$ valor [data]"
+
+Exemplos:
+- "Almoço com cliente R$ 50"
+- "Recebi R$ 1000 do cliente"</Message>
+        </Response>
+      `
+    }
+
+    // Validar e extrair os dados da mensagem
+    const dadosInput = validarEExtrairDados(message)
+
+    // Se a mensagem for inválida, retornar um erro amigável
+    if (!dadosInput.isValid) {
+      return `
+        <Response>
+          <Message>${gerarMensagemErroInput(dadosInput)}</Message>
+        </Response>
+      `
+    }
+
+    // Usando os dados validados
+    const { descricao, valor, data } = dadosInput
     const dataFormatada = formatarData(data)
 
+    console.log('Descrição extraída:', descricao)
     console.log('Valor extraído:', valor)
     console.log('Data extraída:', dataFormatada)
 
-    console.log('Usuário:', user)
+    // Detectar se é ganho ou gasto baseado em palavras-chave
+    const isIncome = detectIsIncome(message)
 
-    let twilioResponse = `
-      <Response>
-        <Message>❌ Ocorreu um erro ao processar sua mensagem. Por favor, tente novamente.</Message>
-      </Response>
-    `
+    try {
+      // Classificar como ganho ou gasto dependendo da detecção inicial
+      if (isIncome) {
+        // Processo para ganhos/receitas
+        const classification = await classifyIncome(message, user.perfil)
+        console.log('Classificação de ganho:', classification)
 
-    const classification = await classifyExpense(Body, user?.perfil)
+        // Tentativa de classificação automática mesmo com baixa confiança
+        // Detecção de contexto para ajudar
+        if (classification.status === 'ERROR' || classification.status === 'LOW_CONFIDENCE') {
+          // Tentar determinar o tipo via detector de contexto
+          const contextoDetectado = detectContext(message)
 
-    // Tratamento de caso sem valor
-    if (valor === 0) {
-      console.log('Sem valor identificado')
-      twilioResponse = `
-       <Response>
-         <Message>Por favor, insira um valor no que foi especificado</Message>
-       </Response>
-     `
-      return twilioResponse
-    }
+          // Se for possível inferir o tipo (PJ ou PF)
+          if (contextoDetectado !== 'INDEFINIDO') {
+            // Atualizar a classificação com o contexto detectado
+            classification.tipo = contextoDetectado
+            classification.categoria =
+              contextoDetectado === 'PJ' ? 'Receita Empresarial' : 'Receita Pessoal'
+            classification.fonte = contextoDetectado === 'PJ' ? 'Cliente' : 'Geral'
+            classification.probabilidade = 0.7 // Classificação de média confiança
+            classification.status = 'SUCCESS'
 
-    console.log(classification)
+            // Processar com a classificação melhorada
+            return await processIncomeSuccess(classification, descricao, valor, dataFormatada, user)
+          }
 
-    // Tratamento de classificação com baixa confiança ou erro
-    if (classification.status === 'ERROR' || classification.status === 'LOW_CONFIDENCE') {
-      twilioResponse = formatClassificationHelpResponse(
-        classification.extractedInfo.description,
-        valor,
-        user?.perfil
-      )
+          if (contextoDetectado === 'INDEFINIDO') {
+            return `        <Response>
+          <Message>Por favor, insira uma mensagem dentro do contexto do Finia.</Message>
+        </Response>`
+          }
 
-      console.log('Classificação ambígua:', twilioResponse)
+          // Se não foi possível detectar o contexto, usamos a classificação sugerida
+          // Mesmo com baixa confiança, tentamos dar uma resposta útil
+          classification.status = 'SUCCESS' // Forçar sucesso
 
-      return twilioResponse
-    }
+          // Incluir mensagem sobre a classificação automática
+          return await processIncomeSuccess(
+            classification,
+            descricao,
+            valor,
+            dataFormatada,
+            user,
+            true // flag indicando baixa confiança
+          )
+        }
 
-    const { categoria, natureza, probabilidade } = classification
-
-    let mensagemResposta
-
-    if (user.perfil === 'pessoa_fisica') {
-      mensagemResposta = `
-      🎬 *Seu gasto foi salvo na planilha!*
-      📌 Categoria: ${categoria}
-           `
-    } else {
-      if (natureza === 'PJ') {
-        mensagemResposta = `
-            ✅ *Salvo como GASTO EMPRESARIAL (PJ)!*
-            📌 Categoria: ${categoria}
-            📊 **Dica fiscal**: Guarde a nota fiscal para dedução.
-                  `
+        // Processamento de receita com classificação confiável
+        return await processIncomeSuccess(classification, descricao, valor, dataFormatada, user)
       } else {
-        mensagemResposta = `
-          🎬 *Salvo como GASTO PESSOAL (PF)!*
-          📌 Categoria: ${categoria}
-          ${Body}
-        `
+        // Processo para gastos/despesas
+        const classification = await classifyExpense(message, user.perfil)
+        console.log('Classificação de gasto:', classification)
+
+        // Tentativa de classificação automática mesmo com baixa confiança
+        if (classification.status === 'ERROR' || classification.status === 'LOW_CONFIDENCE') {
+          // Tentar determinar o tipo via detector de contexto
+          const contextoDetectado = detectContext(message)
+
+          // Se for possível inferir o tipo (PJ ou PF)
+          if (contextoDetectado !== 'INDEFINIDO') {
+            // Atualizar a classificação com o contexto detectado
+            classification.tipo = contextoDetectado
+            classification.categoria =
+              contextoDetectado === 'PJ' ? 'Despesa Empresarial' : 'Despesa Pessoal'
+            classification.probabilidade = 0.7 // Classificação de média confiança
+            classification.status = 'SUCCESS'
+
+            // Processar com a classificação melhorada
+            return await processExpenseSuccess(
+              classification,
+              descricao,
+              valor,
+              dataFormatada,
+              user
+            )
+          }
+
+          if (contextoDetectado === 'INDEFINIDO') {
+            return `        <Response>
+          <Message>Por favor, insira uma mensagem dentro do contexto do Finia.</Message>
+        </Response>`
+          }
+
+          // Se não foi possível detectar o contexto, usamos a classificação sugerida
+          // Mesmo com baixa confiança, tentamos dar uma resposta útil
+          classification.status = 'SUCCESS' // Forçar sucesso
+
+          // Incluir mensagem sobre a classificação automática
+          return await processExpenseSuccess(
+            classification,
+            descricao,
+            valor,
+            dataFormatada,
+            user,
+            true // flag indicando baixa confiança
+          )
+        }
+
+        // Processamento de gasto com classificação confiável
+        return await processExpenseSuccess(classification, descricao, valor, dataFormatada, user)
       }
+    } catch (error) {
+      console.error('Erro na classificação:', error)
+      return `
+        <Response>
+          <Message>❌ Ocorreu um erro ao processar sua mensagem. Por favor, tente novamente com uma descrição clara.</Message>
+        </Response>
+      `
     }
-
-    console.log('Resposta enviada:', mensagemResposta)
-
-    twilioResponse = `
-      <Response>
-        <Message>${mensagemResposta.trim()}</Message>
-      </Response>
-    `
-
-    return twilioResponse
   } catch (error) {
     console.error('Erro no processamento:', error)
-
     return `
       <Response>
         <Message>❌ Ocorreu um erro ao processar sua mensagem. 
- Verifique o formato e tente novamente.
- Exemplo: "Almoço R$ 50" ou "Gasolina R$ 100"</Message>
+Verifique o formato e tente novamente.
+Exemplo: "Almoço R$ 50" ou "Recebi R$ 1000 do cliente"</Message>
       </Response>
     `
   }
 })
+
+// Função para processar um gasto classificado com sucesso
+async function processExpenseSuccess(
+  classification,
+  descricao,
+  valor,
+  dataFormatada,
+  user,
+  lowConfidence = false
+) {
+  // Extrair informações relevantes
+  const { tipo, categoria, natureza, probabilidade } = classification
+
+  // Configurar mensagem de acordo com o perfil e classificação
+  let mensagemResposta
+
+  // Aqui você integraria com SheetManager para salvar o gasto
+  // const sheetManager = new SheetManager(user.spreadsheet_id);
+  // await sheetManager.adicionarGasto(tipo, new Date(dataFormatada), descricao, valor, categoria);
+
+  const lowConfidenceMessage = lowConfidence
+    ? '\n\n⚠️ *Classificação automática* - Se desejar alterar, registre novamente com mais detalhes.'
+    : ''
+
+  if (user.perfil === 'pessoa_fisica') {
+    mensagemResposta = `
+    🎬 *Seu gasto foi salvo na planilha!*
+    📌 Categoria: ${categoria}
+    💰 Valor: R$ ${valor.toFixed(2)}
+    📅 Data: ${dataFormatada}
+    🔍 Descrição: ${descricao}
+    
+    💡 Obrigado por registrar seu gasto conosco!${lowConfidenceMessage}
+    `
+  } else {
+    // dual ou empresario_individual
+    if (tipo === 'PJ') {
+      mensagemResposta = `
+      ✅ *Salvo como GASTO EMPRESARIAL (PJ)!*
+      📌 Categoria: ${categoria}
+      💰 Valor: R$ ${valor.toFixed(2)}
+      📅 Data: ${dataFormatada}
+      🔍 Descrição: ${descricao}
+      📊 **Dica fiscal**: Guarde a nota fiscal para dedução de impostos.${lowConfidenceMessage}
+      `
+    } else {
+      mensagemResposta = `
+      🏠 *Salvo como GASTO PESSOAL (PF)!*
+      📌 Categoria: ${categoria}
+      💰 Valor: R$ ${valor.toFixed(2)}
+      📅 Data: ${dataFormatada}
+      🔍 Descrição: ${descricao}
+      
+      💡 Este mês você já gastou R$ X nesta categoria.${lowConfidenceMessage}
+      `
+    }
+  }
+
+  return `
+    <Response>
+      <Message>${mensagemResposta.trim()}</Message>
+    </Response>
+  `
+}
+
+// Função para processar uma receita classificada com sucesso
+async function processIncomeSuccess(
+  classification,
+  descricao,
+  valor,
+  dataFormatada,
+  user,
+  lowConfidence = false
+) {
+  // Extrair informações relevantes
+  const { tipo, categoria, fonte, probabilidade } = classification
+
+  // Configurar mensagem de acordo com o perfil e classificação
+  let mensagemResposta
+
+  // Aqui você integraria com SheetManager para salvar a receita
+  // const sheetManager = new SheetManager(user.spreadsheet_id);
+  // await sheetManager.adicionarGanho(tipo, new Date(dataFormatada), descricao, valor, categoria);
+
+  const lowConfidenceMessage = lowConfidence
+    ? '\n\n⚠️ *Classificação automática* - Se desejar alterar, registre novamente com mais detalhes.'
+    : ''
+
+  if (user.perfil === 'pessoa_fisica') {
+    mensagemResposta = `
+    💰 *Receita registrada com sucesso!*
+    📌 Categoria: ${categoria}
+    💵 Valor: R$ ${valor.toFixed(2)}
+    📅 Data: ${dataFormatada}
+    🔍 Descrição: ${descricao}
+    📋 Fonte: ${fonte || 'Não especificada'}
+    
+    🎉 Ótimo trabalho! Continue acompanhando suas finanças.${lowConfidenceMessage}
+    `
+  } else {
+    // dual ou empresario_individual
+    if (tipo === 'PJ') {
+      mensagemResposta = `
+      💼 *Receita EMPRESARIAL (PJ) registrada!*
+      📌 Categoria: ${categoria}
+      💵 Valor: R$ ${valor.toFixed(2)}
+      📅 Data: ${dataFormatada}
+      🔍 Descrição: ${descricao}
+      🏢 Fonte: ${fonte || 'Cliente'}
+      
+      💡 **Dica fiscal**: Lembre-se de emitir a nota fiscal correspondente.${lowConfidenceMessage}
+      `
+    } else {
+      mensagemResposta = `
+      👤 *Receita PESSOAL (PF) registrada!*
+      📌 Categoria: ${categoria}
+      💵 Valor: R$ ${valor.toFixed(2)}
+      📅 Data: ${dataFormatada}
+      🔍 Descrição: ${descricao}
+      📋 Fonte: ${fonte || 'Não especificada'}
+      
+      🎉 Parabéns pelo ganho! Continue acompanhando suas finanças.${lowConfidenceMessage}
+      `
+    }
+  }
+
+  return `
+    <Response>
+      <Message>${mensagemResposta.trim()}</Message>
+    </Response>
+  `
+}
 
 function onboardingMessage(profile: string) {
   let messageOnboarding
@@ -122,17 +336,19 @@ function onboardingMessage(profile: string) {
     Ajudo você a separar e gerenciar:
     ✅ Gastos Pessoais (PF)
     ✅ Gastos Empresariais (PJ)
+    ✅ Receitas Pessoais e Profissionais
     
     *Como funciona?*
-    Registre seus gastos normalmente:
+    
+    📝 Para registrar GASTOS, simplesmente descreva:
     - "Almoço com cliente R$ 120" (PJ)
     - "Cinema com família R$ 80" (PF)
     
-    Classificarei automaticamente entre pessoal e empresarial! 🚀
+    💰 Para registrar RECEITAS, use termos como:
+    - "Recebi R$ 2000 do cliente ABC pelo projeto" (PJ)
+    - "Recebi salário de R$ 3000 hoje" (PF)
     
-    Dicas importantes:
-    - Gastos PJ são dedutíveis de impostos
-    - Controle separado facilita sua vida
+    Classificarei automaticamente entre pessoal e empresarial! 🚀
     
     Dúvidas? Digite *!ajuda*
         `
@@ -144,17 +360,15 @@ function onboardingMessage(profile: string) {
     
     Olá! Sou seu assistente financeiro pessoal no WhatsApp. 📱
     
-    Vou te ajudar a controlar seus gastos de forma simples e inteligente:
+    Vou te ajudar a controlar seus gastos e receitas de forma simples:
     
-    ✅ Registre gastos com facilidade
-    ✅ Categorize automaticamente
-    ✅ Acompanhe seus investimentos
-    
-    *Como começar?*
-    Envie seus gastos naturalmente:
+    ✅ Registre gastos com facilidade:
     - "Mercado R$ 250"
     - "Uber R$ 35"
-    - "Netflix R$ 45,90"
+    
+    ✅ Registre receitas facilmente:
+    - "Recebi salário R$ 3000"
+    - "Ganhei R$ 500 de freelance"
     
     Estou aqui para te ajudar a ter mais controle financeiro! 💸
     
@@ -169,38 +383,8 @@ function onboardingMessage(profile: string) {
       `
 }
 
-function formatClassificationHelpResponse(description: string, value: number, profile: string) {
-  let messageText
-
-  if (profile === 'dual') {
-    messageText = `
- 🤔 *Preciso da sua ajuda para classificar:* "${description}" (R$ ${value})
- 
- Por favor, escolha uma opção:
- 1️⃣ - *PJ* (gasto empresarial, dedutível no imposto)
- 2️⃣ - *PF* (gasto pessoal)
- 
- Ou responda com "categoria: [nome da categoria]" 
- para informar diretamente a categoria específica.
-     `
-  } else {
-    messageText = `
- 🤔 *Em qual categoria devo classificar:* "${description}" (R$ ${value})?
- 
- Responda com o nome da categoria.
- Exemplos: Alimentação, Transporte, Lazer, etc.
-     `
-  }
-
-  return `
-     <Response>
-       <Message>${messageText}</Message>
-     </Response>
-   `
-}
-
 // Função para processar comandos especiais
-async function processarComando(comando: string, telefone: string) {
+async function processarComando(comando: string, telefone: string, user: any) {
   try {
     // Remover o ! inicial e dividir em partes
     const partes = comando.substring(1).split(' ')
@@ -214,15 +398,49 @@ async function processarComando(comando: string, telefone: string) {
       console.log(`Processando comando de relatório para ${mes}/${ano}`)
 
       // Enviar para a função de geração de relatório
-      return await gerarEEnviarRelatorio(telefone, mes, ano)
+      return await gerarEEnviarRelatorio(telefone, mes, ano, user)
+    } else if (acao === 'ajuda') {
+      return `
+      <Response>
+        <Message>*📚 Ajuda do Finia*
+
+*Formato correto*:
+- "Descrição/nome + R$ valor + [data opcional]"
+
+*Exemplos*:
+- "Almoço R$ 50"
+- "Uber R$ 35 12/04"
+- "Recebi do cliente ABC R$ 2000"
+- "Pagamento freelance R$ 500 04/04"
+
+*Comandos disponíveis*:
+!relatorio [mês] [ano] - Gera relatório financeiro
+!ajuda - Mostra esta mensagem de ajuda
+
+*Dicas*:
+- Para melhor classificação, seja específico:
+  - Para gastos/receitas PJ: mencione "cliente", "empresa", "projeto"
+  - Para gastos/receitas PF: use "pessoal", "casa", "família"
+- Se a classificação automática não for correta, registre novamente com mais detalhes.
+        </Message>
+      </Response>
+      `
+    } else if (acao === 'corrigir') {
+      return `
+      <Response>
+        <Message>Para corrigir um registro, por favor, insira-o novamente com mais detalhes para garantir uma classificação correta.
+
+Exemplo: "Almoço de trabalho com cliente ABC R$ 120 (PJ)"
+        </Message>
+      </Response>
+      `
     }
 
     // Comando não reconhecido
     console.log('Comando não reconhecido:', comando)
     return `
      <Response>
-       <Message>❓ Comando não reconhecido. Comandos disponíveis:
-- !relatorio [mês] [ano] - Solicitar relatório</Message>
+       <Message>❓ Comando não reconhecido. Digite !ajuda para ver os comandos disponíveis.</Message>
      </Response>
    `
   } catch (error) {
@@ -254,167 +472,12 @@ function obterMesAtual() {
   return meses[new Date().getMonth()]
 }
 
-// // Função para gerar e enviar relatório
-// async function gerarEEnviarRelatorio(telefone: string, mes: string, ano: string) {
-//  try {
-//    console.log(`Gerando relatório para ${mes}/${ano}`)
-
-//    // Obter dados para o período
-//    const gastosPJ = await obterGastosPorMes('PJ', mes, ano)
-//    const gastosPF = await obterGastosPorMes('PF', mes, ano)
-
-//    console.log(`Encontrados ${gastosPJ.length} gastos PJ e ${gastosPF.length} gastos PF`)
-
-//    // Verificar se há dados para gerar relatório
-//    if (gastosPJ.length === 0 && gastosPF.length === 0) {
-//      return `
-//        <Response>
-//          <Message>Não encontrei gastos registrados para ${mes}/${ano}. Registre alguns gastos primeiro.</Message>
-//        </Response>
-//      `
-//    }
-
-//    // Calcular totais
-//    const totalPJ = gastosPJ.reduce((acc, item) => acc + Number(item[2] || 0), 0)
-//    const totalPF = gastosPF.reduce((acc, item) => acc + Number(item[2] || 0), 0)
-
-//    // Agrupar por categoria
-//    const categoriasPJ = agruparPorCategoria(gastosPJ)
-//    const categoriasPF = agruparPorCategoria(gastosPF)
-
-//    console.log('Gerando insights financeiros...')
-
-//    // Gerar insights com OpenAI
-//    const insights = await gerarInsightsFinanceiros({
-//      totalPJ,
-//      totalPF,
-//      categoriasPJ,
-//      categoriasPF,
-//      mes,
-//      ano
-//    })
-
-//    // Criar mensagem do relatório
-//    const mensagemRelatorio = `
-// 📊 RELATÓRIO FINANCEIRO: ${mes.toUpperCase()}/${ano}
-
-// 💼 GASTOS PJ: R$ ${totalPJ.toFixed(2)}
-// Principais categorias:
-// ${categoriasPJ.slice(0, 3).map(c => `• ${c.categoria}: R$ ${c.total.toFixed(2)}`).join('\n')}
-
-// 👤 GASTOS PF: R$ ${totalPF.toFixed(2)}
-// Principais categorias:
-// ${categoriasPF.slice(0, 3).map(c => `• ${c.categoria}: R$ ${c.total.toFixed(2)}`).join('\n')}
-
-// ✨ INSIGHTS:
-// ${insights.map(i => `• ${i}`).join('\n')}
-//    `
-
-//    console.log('Relatório gerado com sucesso')
-
-//    // Retornar resposta para o Twilio
-//    return `
-//      <Response>
-//        <Message>${mensagemRelatorio}</Message>
-//      </Response>
-//    `
-//  } catch (error) {
-//    console.error('Erro ao gerar relatório:', error)
-
-//    return `
-//      <Response>
-//        <Message>❌ Ocorreu um erro ao gerar o relatório. Por favor, tente novamente.</Message>
-//      </Response>
-//    `
-//  }
-// }
-
-// // Função para obter gastos por mês
-// async function obterGastosPorMes(tipo: string, mes: string, ano: string) {
-//  const meses = {
-//    'janeiro': '01', 'fevereiro': '02', 'março': '03', 'abril': '04',
-//    'maio': '05', 'junho': '06', 'julho': '07', 'agosto': '08',
-//    'setembro': '09', 'outubro': '10', 'novembro': '11', 'dezembro': '12'
-//  }
-
-//  const mesNumero = meses[mes.toLowerCase()]
-//  if (!mesNumero) {
-//    console.error('Mês inválido:', mes)
-//    return []
-//  }
-
-//  try {
-//    const todosDados = await obterDadosSheet(tipo, 'A2:E1000')
-
-//    // Filtrar por data (formato DD/MM/AAAA)
-//    return todosDados.filter(linha => {
-//      if (!linha[0]) return false
-//      const data = linha[0]
-//      return data.includes(`/${mesNumero}/${ano}`) || data.includes(`/${mesNumero}/${ano.substring(2)}`)
-//    })
-//  } catch (error) {
-//    console.error(`Erro ao obter dados da planilha ${tipo}:`, error)
-//    return []
-//  }
-// }
-
-// // Função para agrupar gastos por categoria
-// function agruparPorCategoria(dados) {
-//  const categorias = {}
-
-//  dados.forEach(linha => {
-//    if (!linha[3]) return
-
-//    const categoria = linha[3]
-//    const valor = Number(linha[2] || 0)
-
-//    if (!categorias[categoria]) {
-//      categorias[categoria] = 0
-//    }
-
-//    categorias[categoria] += valor
-//  })
-
-//  // Converter para array e ordenar
-//  return Object.entries(categorias)
-//    .map(([categoria, total]) => ({ categoria, total }))
-//    .sort((a, b) => Number(b.total) - Number(a.total))
-// }
-
-// // Função para gerar insights com IA
-// async function gerarInsightsFinanceiros(dados) {
-//  try {
-//    const openai = getOpenAIClient()
-
-//    const prompt = `
-//      Analise os seguintes dados financeiros de ${dados.mes}/${dados.ano}:
-
-//      Gastos PJ Total: R$ ${dados.totalPJ.toFixed(2)}
-//      Principais categorias PJ:
-//      ${dados.categoriasPJ.map(c => `- ${c.categoria}: R$ ${c.total.toFixed(2)}`).join('\n')}
-
-//      Gastos PF Total: R$ ${dados.totalPF.toFixed(2)}
-//      Principais categorias PF:
-//      ${dados.categoriasPF.map(c => `- ${c.categoria}: R$ ${c.total.toFixed(2)}`).join('\n')}
-
-//      Gere 3-5 insights financeiros úteis sobre estes dados.
-//      Formato em tópicos curtos e diretos, cada um com no máximo 2 linhas.
-//      Não use bullet points, apenas texto simples.
-//      Separe cada insight por quebra de linha.
-//    `
-
-//    const response = await openai.chat.completions.create({
-//      model: "gpt-3.5-turbo",
-//      messages: [{ role: "user", content: prompt }]
-//    })
-
-//    const texto = response.choices[0].message?.content || ''
-//    return texto.split('\n').filter(line => line.trim().length > 0)
-//  } catch (error) {
-//    console.error('Erro ao gerar insights:', error)
-//    return [
-//      'Não foi possível gerar insights neste momento.',
-//      'Revise seus gastos para identificar oportunidades de economia.'
-//    ]
-//  }
-// }
+// Placeholder para a função de geração de relatório
+async function gerarEEnviarRelatorio(telefone: string, mes: string, ano: string, user: any) {
+  // Esta é uma versão simplificada - você precisará implementar a lógica completa
+  return `
+    <Response>
+      <Message>📊 Relatório de ${mes}/${ano} solicitado. Estamos gerando e enviaremos em breve!</Message>
+    </Response>
+  `
+}

@@ -42,7 +42,7 @@ function defineIfNeedClassification(message, response?) {
     }
   }
 
-  if (classification.probabilidade <= 0.7) {
+  if (classification.probabilidade <= 0.8) {
     return {
       ...classification,
       status: 'LOW_CONFIDENCE',
@@ -92,6 +92,37 @@ export async function classifyExpense(message: string, profile: string) {
     return defineIfNeedClassification(message, responseFiltered)
   } catch (error) {
     console.error('Erro ao classificar gasto:', error)
+  }
+}
+
+export async function classifyIncome(message: string, profile: string) {
+  const openai = getOpenAIClient()
+
+  const promptTemplates = promptConfig.ganhos[profile] || promptConfig.ganhos.dual
+
+  const keywordsPJ = configJson.classificacao.palavrasChaveGanhosPJ.join(', ')
+  const keywordsPF = configJson.classificacao.palavrasChaveGanhosPF.join(', ')
+
+  let systemContent = promptTemplates.system
+    .replace('{palavrasChaveGanhosPJ}', keywordsPJ)
+    .replace('{palavrasChaveGanhosPF}', keywordsPF)
+
+  let userContent = promptTemplates.user.replace('{mensagem}', message)
+
+  try {
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        { role: 'system', content: systemContent },
+        { role: 'user', content: userContent }
+      ]
+    })
+
+    const responseFiltered = response.choices[0].message?.content || '{}'
+
+    return defineIfNeedClassification(message, responseFiltered)
+  } catch (error) {
+    console.error('Erro ao classificar ganho:', error)
   }
 }
 
