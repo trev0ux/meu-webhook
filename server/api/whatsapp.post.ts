@@ -1,34 +1,33 @@
 import { defineEventHandler, readBody } from 'h3'
-import { classifyExpense, classifyIncome } from './utils/openai'
+import { classifyTransaction } from './utils/openai'
 import { formatarData } from './utils/extrator'
 import { validarEExtrairDados, gerarMensagemErroInput } from './utils/input-validator'
-import { detectIsIncome, detectIsExpense, detectContext } from './utils/message-detector'
+import { detectContext } from './utils/message-detector'
 import { SheetManager } from './utils/sheets-manager'
 import { findUser } from '../../db/users'
+import {
+  contemMultiplasTransacoes,
+  extrairMultiplasTransacoes,
+  Transacao
+} from './utils/multi-value-processor'
 
 export default defineEventHandler(async (event) => {
   try {
-    // Obter dados da requisição
     const body = await readBody(event)
     const { Body: message, From: phoneNumber } = body
     console.log('Recebido de:', phoneNumber)
     console.log('Mensagem:', message)
 
-    // Verificar e processar usuário
     const user = await findUser(phoneNumber)
 
-    // Se usuário não existe, iniciar onboarding
     if (!user) {
-      return onboardingMessage('empresario_individual') // default para novos usuários
+      return onboardingMessage('empresario_individual')
     }
 
-    // Verifica se é um comando especial (começa com !)
     if (message.trim().startsWith('!')) {
       return await processarComando(message, phoneNumber, user)
     }
 
-    // Verificar se é uma resposta para uma classificação
-    // Usando uma abordagem simplificada: verificar por números (1, 2) ou prefixo "categoria:"
     if (
       message.trim() === '1' ||
       message.trim() === '2' ||
@@ -41,15 +40,17 @@ export default defineEventHandler(async (event) => {
 
 Exemplos:
 - "Almoço com cliente R$ 50"
-- "Recebi R$ 1000 do cliente"</Message>
+- "Recebi R$ 1000 do cliente ABC"</Message>
         </Response>
       `
     }
 
-    // Validar e extrair os dados da mensagem
+    if (contemMultiplasTransacoes(message)) {
+      return await processarMultiplasTransacoes(message, user)
+    }
+
     const dadosInput = validarEExtrairDados(message)
 
-    // Se a mensagem for inválida, retornar um erro amigável
     if (!dadosInput.isValid) {
       return `
         <Response>
@@ -58,7 +59,6 @@ Exemplos:
       `
     }
 
-    // Usando os dados validados
     const { descricao, valor, data } = dadosInput
     const dataFormatada = formatarData(data)
 
@@ -66,126 +66,86 @@ Exemplos:
     console.log('Valor extraído:', valor)
     console.log('Data extraída:', dataFormatada)
 
-    // Detectar se é ganho ou gasto baseado em palavras-chave
-    const isIncome = detectIsIncome(message, user.perfil)
-    const isExpense = detectIsExpense(message, user.perfil)
-
     try {
-      // Classificar como ganho ou gasto dependendo da detecção inicial
-      if (isIncome) {
-        // Processo para ganhos/receitas
-        const classification = await classifyIncome(message, user.perfil)
-        console.log('Classificação de ganho:', classification)
+      // Classificação unificada via IA
+      const classification = await classifyTransaction(message, user.perfil)
+      console.log('Classificação da transação:', classification)
 
-        // Tentativa de classificação automática mesmo com baixa confiança
-        // Detecção de contexto para ajudar
-        if (classification.status === 'ERROR' || classification.status === 'LOW_CONFIDENCE') {
-          // Tentar determinar o tipo via detector de contexto
-          const contextoDetectado = detectContext(message)
+      if (classification.status === 'SUCCESS') {
+        // Processamento baseado na natureza da transação (GASTO ou GANHO)
+        if (classification.natureza === 'GASTO') {
+          return await processExpenseSuccess(classification, descricao, valor, dataFormatada, user)
+        } else if (classification.natureza === 'GANHO') {
+          return await processIncomeSuccess(classification, descricao, valor, dataFormatada, user)
+        }
+      }
 
-          // Se for possível inferir o tipo (PJ ou PF)
-          if (contextoDetectado !== 'INDEFINIDO') {
-            // Atualizar a classificação com o contexto detectado
-            classification.tipo = contextoDetectado
-            classification.categoria =
-              contextoDetectado === 'PJ' ? 'Receita Empresarial' : 'Receita Pessoal'
-            classification.fonte = contextoDetectado === 'PJ' ? 'Cliente' : 'Geral'
-            classification.probabilidade = 0.7 // Classificação de média confiança
-            classification.status = 'SUCCESS'
+      // Se a IA não conseguiu classificar com alta confiança
+      const contextoDetectado = detectContext(message)
 
-            // Processar com a classificação melhorada
-            return await processIncomeSuccess(classification, descricao, valor, dataFormatada, user)
+      // Tentar extrair possível origem/contexto
+      const extractedInfo = extractExpenseInfo(message)
+      const origemDetectada = extractedInfo.origin || 'Não especificada'
+
+      if (contextoDetectado !== 'INDEFINIDO') {
+        // Verificar palavras-chave para determinar se é receita ou despesa
+        if (
+          message.toLowerCase().includes('recebi') ||
+          message.toLowerCase().includes('ganho') ||
+          message.toLowerCase().includes('salário') ||
+          message.toLowerCase().includes('pagamento')
+        ) {
+          // Parece ser uma receita
+          const fallbackClassification = {
+            natureza: 'GANHO',
+            tipo: contextoDetectado,
+            categoria: contextoDetectado === 'PJ' ? 'Receita Empresarial' : 'Receita Pessoal',
+            origem: origemDetectada,
+            probabilidade: 0.6,
+            status: 'SUCCESS'
           }
-
-          if (contextoDetectado === 'INDEFINIDO') {
-            return `        <Response>
-          <Message>Por favor, insira uma mensagem dentro do contexto do Finia.</Message>
-        </Response>`
-          }
-
-          // Se não foi possível detectar o contexto, usamos a classificação sugerida
-          // Mesmo com baixa confiança, tentamos dar uma resposta útil
-          classification.status = 'SUCCESS' // Forçar sucesso
-
-          // Incluir mensagem sobre a classificação automática
           return await processIncomeSuccess(
-            classification,
+            fallbackClassification,
             descricao,
             valor,
             dataFormatada,
             user,
-            true // flag indicando baixa confiança
+            true
           )
-        }
-
-        // Processamento de receita com classificação confiável
-        return await processIncomeSuccess(classification, descricao, valor, dataFormatada, user)
-      } else if (isExpense) {
-        // Processo para gastos/despesas
-        const classification = await classifyExpense(message, user.perfil)
-        console.log('Classificação de gasto:', classification)
-
-        // Tentativa de classificação automática mesmo com baixa confiança
-        if (classification.status === 'ERROR' || classification.status === 'LOW_CONFIDENCE') {
-          // Tentar determinar o tipo via detector de contexto
-          const contextoDetectado = detectContext(message)
-
-          // Se for possível inferir o tipo (PJ ou PF)
-          if (contextoDetectado !== 'INDEFINIDO') {
-            // Atualizar a classificação com o contexto detectado
-            classification.tipo = contextoDetectado
-            classification.categoria =
-              contextoDetectado === 'PJ' ? 'Despesa Empresarial' : 'Despesa Pessoal'
-            classification.probabilidade = 0.7 // Classificação de média confiança
-            classification.status = 'SUCCESS'
-
-            // Processar com a classificação melhorada
-            return await processExpenseSuccess(
-              classification,
-              descricao,
-              valor,
-              dataFormatada,
-              user
-            )
+        } else {
+          // Assume-se que é uma despesa (caso mais comum)
+          const fallbackClassification = {
+            natureza: 'GASTO',
+            tipo: contextoDetectado,
+            categoria: contextoDetectado === 'PJ' ? 'Despesa Empresarial' : 'Despesa Pessoal',
+            origem: origemDetectada,
+            probabilidade: 0.6,
+            status: 'SUCCESS'
           }
-
-          if (contextoDetectado === 'INDEFINIDO') {
-            return `        <Response>
-          <Message>Por favor, insira uma mensagem dentro do contexto do Finia.</Message>
-        </Response>`
-          }
-
-          // Se não foi possível detectar o contexto, usamos a classificação sugerida
-          // Mesmo com baixa confiança, tentamos dar uma resposta útil
-          classification.status = 'SUCCESS' // Forçar sucesso
-
-          // Incluir mensagem sobre a classificação automática
           return await processExpenseSuccess(
-            classification,
+            fallbackClassification,
             descricao,
             valor,
             dataFormatada,
             user,
-            true // flag indicando baixa confiança
+            true
           )
         }
+      }
 
-        // Processamento de gasto com classificação confiável
-        return await processExpenseSuccess(classification, descricao, valor, dataFormatada, user)
-      } else {
-        return `
+      // Caso realmente não consigamos classificar
+      return `
         <Response>
-          <Message>⚠️ Não reconheci termos específicos na sua mensagem.
+          <Message>⚠️ Não consegui classificar sua transação com certeza.
           
-Por favor, reescreva incluindo palavras como:
-- Para gastos empresariais: cliente, fornecedor, empresa, reunião, material, escritório
-- Para gastos pessoais: casa, mercado, pessoal, família, lazer
-- Para receitas: pagamento, cliente pagou, recebi, salário, freelance
+Por favor, reescreva incluindo palavras mais específicas como:
+- Para gastos empresariais: cliente, fornecedor, empresa, escritório
+- Para gastos pessoais: casa, mercado, pessoal, família 
+- Para receitas: pagamento, recebi, salário, freelance
 
 Exemplo: "Almoço com cliente R$ 120" ou "Mercado para casa R$ 250"</Message>
         </Response>
       `
-      }
     } catch (error) {
       console.error('Erro na classificação:', error)
       return `
@@ -206,7 +166,145 @@ Exemplo: "Almoço R$ 50" ou "Recebi R$ 1000 do cliente"</Message>
   }
 })
 
-// Função para processar um gasto classificado com sucesso
+async function processarMultiplasTransacoes(message: string, user: any) {
+  try {
+    const transacoes = extrairMultiplasTransacoes(message)
+
+    if (transacoes.length === 0) {
+      return `
+        <Response>
+          <Message>❌ Não consegui identificar transações válidas na sua mensagem. 
+Por favor, verifique o formato e tente novamente.
+Exemplo: "Almoço R$ 50" ou "Recebi R$ 1000 do cliente"</Message>
+        </Response>
+      `
+    }
+
+    const transacoesClassificadas = []
+
+    for (const transacao of transacoes) {
+      try {
+        // Classificação unificada com a nova função
+        const classification = await classifyTransaction(transacao.textoOriginal, user.perfil)
+
+        if (classification.status === 'SUCCESS') {
+          // Classificação com sucesso
+          transacoesClassificadas.push({
+            ...transacao,
+            tipo: classification.tipo,
+            categoria: classification.categoria,
+            origem: classification.origem || 'Não especificada',
+            natureza: classification.natureza === 'GASTO' ? 'despesa' : 'receita'
+          })
+        } else {
+          // Classificação com baixa confiança, tenta usar o contexto
+          const contextoDetectado = detectContext(transacao.textoOriginal)
+
+          // Tentar extrair possível origem/contexto
+          const extractedInfo = extractExpenseInfo(transacao.textoOriginal)
+          const origemDetectada = extractedInfo.origin || 'Não especificada'
+
+          if (contextoDetectado !== 'INDEFINIDO') {
+            // Verificar palavras-chave para determinar se é receita ou despesa
+            const textoLower = transacao.textoOriginal.toLowerCase()
+            const pareceReceita =
+              textoLower.includes('recebi') ||
+              textoLower.includes('ganho') ||
+              textoLower.includes('salário') ||
+              textoLower.includes('pagamento')
+
+            transacoesClassificadas.push({
+              ...transacao,
+              tipo: contextoDetectado,
+              categoria:
+                contextoDetectado === 'PJ'
+                  ? pareceReceita
+                    ? 'Receita Empresarial'
+                    : 'Despesa Empresarial'
+                  : pareceReceita
+                    ? 'Receita Pessoal'
+                    : 'Despesa Pessoal',
+              origem: origemDetectada,
+              natureza: pareceReceita ? 'receita' : 'despesa',
+              confiancaBaixa: true
+            })
+          } else {
+            // Não conseguimos classificar de forma alguma
+            transacoesClassificadas.push({
+              ...transacao,
+              tipo: 'INDEFINIDO',
+              categoria: 'Não Classificado',
+              origem: origemDetectada,
+              natureza: 'indefinido',
+              confiancaBaixa: true
+            })
+          }
+        }
+      } catch (error) {
+        console.error('Erro ao processar transação:', error)
+      }
+    }
+
+    // Removida a inicialização do SheetManager e o armazenamento na planilha
+    let totalPJ = 0
+    let totalPF = 0
+    let countPJ = 0
+    let countPF = 0
+
+    // Calculando os totais sem salvar na planilha
+    for (const transacao of transacoesClassificadas) {
+      if (transacao.tipo === 'PJ') {
+        totalPJ += transacao.valor
+        countPJ++
+      } else if (transacao.tipo === 'PF') {
+        totalPF += transacao.valor
+        countPF++
+      }
+    }
+
+    let resumoMensagem = `✅ *${transacoesClassificadas.length} transações processadas com sucesso!*\n\n`
+
+    if (countPJ > 0) {
+      resumoMensagem += `💼 *PJ:* ${countPJ} itens totalizando R$ ${totalPJ.toFixed(2)}\n`
+    }
+
+    if (countPF > 0) {
+      resumoMensagem += `👤 *PF:* ${countPF} itens totalizando R$ ${totalPF.toFixed(2)}\n`
+    }
+
+    resumoMensagem += `\n📝 *Detalhes:*\n`
+
+    const transacoesExibidas = transacoesClassificadas.slice(0, 5)
+
+    for (const [index, transacao] of transacoesExibidas.entries()) {
+      const tipoIcon = transacao.tipo === 'PJ' ? '💼' : '👤'
+      const naturezaIcon = transacao.natureza === 'receita' ? '💰' : '💸'
+
+      resumoMensagem += `${index + 1}. ${tipoIcon} ${naturezaIcon} "${transacao.descricao}" - R$ ${transacao.valor.toFixed(2)} (${transacao.categoria})\n`
+      resumoMensagem += `   └ Origem: ${transacao.origem}\n`
+    }
+
+    if (transacoesClassificadas.length > 5) {
+      resumoMensagem += `...e mais ${transacoesClassificadas.length - 5} transações.\n`
+    }
+
+    resumoMensagem += '\n⚠️ Use !relatorio para ver todas as transações organizadas.'
+
+    return `
+      <Response>
+        <Message>${resumoMensagem}</Message>
+      </Response>
+    `
+  } catch (error) {
+    console.error('Erro ao processar múltiplas transações:', error)
+    return `
+      <Response>
+        <Message>❌ Ocorreu um erro ao processar suas transações. Por favor, tente novamente.</Message>
+      </Response>
+    `
+  }
+}
+
 async function processExpenseSuccess(
   classification,
   descricao,
@@ -215,63 +313,70 @@ async function processExpenseSuccess(
   user,
   lowConfidence = false
 ) {
-  // Extrair informações relevantes
-  const { tipo, categoria, natureza, probabilidade } = classification
+  const { tipo, categoria, natureza, origem, probabilidade } = classification
 
-  // Configurar mensagem de acordo com o perfil e classificação
-  let mensagemResposta
-
-  // Aqui você integraria com SheetManager para salvar o gasto
-  // const sheetManager = new SheetManager(user.spreadsheet_id);
-  // await sheetManager.adicionarGasto(tipo, new Date(dataFormatada), descricao, valor, categoria);
+  // Removida a inicialização do SheetManager e o armazenamento na planilha
+  console.log(
+    `Simulando salvamento de gasto: ${tipo}, ${dataFormatada}, ${descricao}, ${valor}, ${categoria}, Origem: ${origem || 'Não especificada'}`
+  )
 
   const lowConfidenceMessage = lowConfidence
     ? '\n\n⚠️ *Classificação automática* - Se desejar alterar, registre novamente com mais detalhes.'
     : ''
 
   if (user.perfil === 'pessoa_fisica') {
-    mensagemResposta = `
+    const mensagemResposta = `
     🎬 *Seu gasto foi salvo na planilha!*
     📌 Categoria: ${categoria}
     💰 Valor: R$ ${valor.toFixed(2)}
     📅 Data: ${dataFormatada}
     🔍 Descrição: ${descricao}
+    🏪 Origem: ${origem || 'Não especificada'}
     
     💡 Obrigado por registrar seu gasto conosco!${lowConfidenceMessage}
     `
+    return `
+      <Response>
+        <Message>${mensagemResposta.trim()}</Message>
+      </Response>
+    `
   } else {
-    // dual ou empresario_individual
     if (tipo === 'PJ') {
-      mensagemResposta = `
+      const mensagemResposta = `
       ✅ *Salvo como GASTO EMPRESARIAL (PJ)!*
       📌 Categoria: ${categoria}
       💰 Valor: R$ ${valor.toFixed(2)}
       📅 Data: ${dataFormatada}
       🔍 Descrição: ${descricao}
+      🏢 Fornecedor: ${origem || 'Não especificado'}
+      
       📊 **Dica fiscal**: Guarde a nota fiscal para dedução de impostos.${lowConfidenceMessage}
       `
+      return `
+        <Response>
+          <Message>${mensagemResposta.trim()}</Message>
+        </Response>
+      `
     } else {
-      mensagemResposta = `
+      const mensagemResposta = `
       🏠 *Salvo como GASTO PESSOAL (PF)!*
       📌 Categoria: ${categoria}
       💰 Valor: R$ ${valor.toFixed(2)}
       📅 Data: ${dataFormatada}
       🔍 Descrição: ${descricao}
+      🏪 Estabelecimento: ${origem || 'Não especificado'}
       
-      💡 Este mês você já gastou R$ X nesta categoria.${lowConfidenceMessage}
+      💡 Gasto registrado com sucesso.${lowConfidenceMessage}
+      `
+      return `
+        <Response>
+          <Message>${mensagemResposta.trim()}</Message>
+        </Response>
       `
     }
   }
-  console.log(mensagemResposta)
-
-  return `
-    <Response>
-      <Message>${mensagemResposta}</Message>
-    </Response>
-  `
 }
 
-// Função para processar uma receita classificada com sucesso
 async function processIncomeSuccess(
   classification,
   descricao,
@@ -280,63 +385,69 @@ async function processIncomeSuccess(
   user,
   lowConfidence = false
 ) {
-  // Extrair informações relevantes
-  const { tipo, categoria, fonte, probabilidade } = classification
+  const { tipo, categoria, origem, probabilidade } = classification
 
-  // Configurar mensagem de acordo com o perfil e classificação
-  let mensagemResposta
-
-  // Aqui você integraria com SheetManager para salvar a receita
-  // const sheetManager = new SheetManager(user.spreadsheet_id);
-  // await sheetManager.adicionarGanho(tipo, new Date(dataFormatada), descricao, valor, categoria);
+  // Removida a inicialização do SheetManager e o armazenamento na planilha
+  console.log(
+    `Simulando salvamento de ganho: ${tipo}, ${dataFormatada}, ${descricao}, ${valor}, ${categoria}, Origem: ${origem || 'Não especificada'}`
+  )
 
   const lowConfidenceMessage = lowConfidence
     ? '\n\n⚠️ *Classificação automática* - Se desejar alterar, registre novamente com mais detalhes.'
     : ''
 
   if (user.perfil === 'pessoa_fisica') {
-    mensagemResposta = `
+    // Removido cálculo do total da categoria
+    const mensagemResposta = `
     💰 *Receita registrada com sucesso!*
     📌 Categoria: ${categoria}
     💵 Valor: R$ ${valor.toFixed(2)}
     📅 Data: ${dataFormatada}
     🔍 Descrição: ${descricao}
-    📋 Fonte: ${fonte || 'Não especificada'}
+    📋 Fonte: ${origem || 'Não especificada'}
     
     🎉 Ótimo trabalho! Continue acompanhando suas finanças.${lowConfidenceMessage}
     `
+    return `
+      <Response>
+        <Message>${mensagemResposta.trim()}</Message>
+      </Response>
+    `
   } else {
-    // dual ou empresario_individual
     if (tipo === 'PJ') {
-      mensagemResposta = `
+      const mensagemResposta = `
       💼 *Receita EMPRESARIAL (PJ) registrada!*
       📌 Categoria: ${categoria}
       💵 Valor: R$ ${valor.toFixed(2)}
       📅 Data: ${dataFormatada}
       🔍 Descrição: ${descricao}
-      🏢 Fonte: ${fonte || 'Cliente'}
+      🏢 Cliente: ${origem || 'Não especificado'}
       
       💡 **Dica fiscal**: Lembre-se de emitir a nota fiscal correspondente.${lowConfidenceMessage}
       `
+      return `
+        <Response>
+          <Message>${mensagemResposta.trim()}</Message>
+        </Response>
+      `
     } else {
-      mensagemResposta = `
+      const mensagemResposta = `
       👤 *Receita PESSOAL (PF) registrada!*
       📌 Categoria: ${categoria}
       💵 Valor: R$ ${valor.toFixed(2)}
       📅 Data: ${dataFormatada}
       🔍 Descrição: ${descricao}
-      📋 Fonte: ${fonte || 'Não especificada'}
+      📋 Fonte: ${origem || 'Não especificada'}
       
       🎉 Parabéns pelo ganho! Continue acompanhando suas finanças.${lowConfidenceMessage}
       `
+      return `
+        <Response>
+          <Message>${mensagemResposta.trim()}</Message>
+        </Response>
+      `
     }
   }
-
-  return `
-    <Response>
-      <Message>${mensagemResposta.trim()}</Message>
-    </Response>
-  `
 }
 
 function onboardingMessage(profile: string) {
@@ -398,21 +509,17 @@ function onboardingMessage(profile: string) {
       `
 }
 
-// Função para processar comandos especiais
 async function processarComando(comando: string, telefone: string, user: any) {
   try {
-    // Remover o ! inicial e dividir em partes
     const partes = comando.substring(1).split(' ')
     const acao = partes[0].toLowerCase()
 
     if (acao === 'relatorio' || acao === 'relatório') {
-      // Obter mês e ano para o relatório
       const mes = partes[1] || obterMesAtual()
       const ano = partes[2] || new Date().getFullYear().toString()
 
       console.log(`Processando comando de relatório para ${mes}/${ano}`)
 
-      // Enviar para a função de geração de relatório
       return await gerarEEnviarRelatorio(telefone, mes, ano, user)
     } else if (acao === 'ajuda') {
       return `
@@ -451,7 +558,6 @@ Exemplo: "Almoço de trabalho com cliente ABC R$ 120 (PJ)"
       `
     }
 
-    // Comando não reconhecido
     console.log('Comando não reconhecido:', comando)
     return `
      <Response>
@@ -468,7 +574,6 @@ Exemplo: "Almoço de trabalho com cliente ABC R$ 120 (PJ)"
   }
 }
 
-// Função helper para obter o nome do mês atual
 function obterMesAtual() {
   const meses = [
     'janeiro',
@@ -487,12 +592,54 @@ function obterMesAtual() {
   return meses[new Date().getMonth()]
 }
 
-// Placeholder para a função de geração de relatório
 async function gerarEEnviarRelatorio(telefone: string, mes: string, ano: string, user: any) {
-  // Esta é uma versão simplificada - você precisará implementar a lógica completa
-  return `
-    <Response>
-      <Message>📊 Relatório de ${mes}/${ano} solicitado. Estamos gerando e enviaremos em breve!</Message>
-    </Response>
-  `
+  try {
+    // Removida a inicialização do SheetManager
+    console.log(`Simulando geração de relatório para ${mes}/${ano}`)
+
+    return `
+      <Response>
+        <Message>📊 Relatório de ${mes}/${ano} solicitado. Estamos gerando e enviaremos em breve!</Message>
+      </Response>
+    `
+  } catch (error) {
+    console.error('Erro ao gerar relatório:', error)
+    return `
+      <Response>
+        <Message>❌ Ocorreu um erro ao gerar seu relatório. Por favor, tente novamente mais tarde.</Message>
+      </Response>
+    `
+  }
+}
+
+// Função auxiliar melhorada para extrair informações básicas
+function extractExpenseInfo(message: string) {
+  const valueRegex = /R\$\s?(\d+(?:[,.]\d+)?)/i
+  const valueMatch = message.match(valueRegex)
+  const value = valueMatch ? valueMatch[1] : '?'
+
+  // Tentar extrair possível origem/contexto
+  let description = message.replace(valueRegex, '').trim()
+  let origin = ''
+
+  // Padrões comuns que indicam origem
+  const originPatterns = [
+    /\bde\s+([^,\.]+)/i, // "Recebi de Cliente ABC"
+    /\bpara\s+([^,\.]+)/i, // "Pagamento para Fornecedor XYZ"
+    /\bdo\s+([^,\.]+)/i, // "Dinheiro do Cliente"
+    /\bda\s+([^,\.]+)/i, // "Pagamento da Empresa"
+    /\bno\s+([^,\.]+)/i, // "Compra no Mercado"
+    /\bem\s+([^,\.]+)/i, // "Jantar em Restaurante"
+    /\bcom\s+([^,\.]+)/i // "Reunião com Cliente"
+  ]
+
+  for (const pattern of originPatterns) {
+    const match = description.match(pattern)
+    if (match && match[1]) {
+      origin = match[1].trim()
+      break
+    }
+  }
+
+  return { value, description, origin }
 }
