@@ -138,6 +138,7 @@ export async function classifyTransaction(message: string, profile: string) {
       const classification = parseCleanJSON(responseContent)
 
       // Determinar se temos confiança suficiente na classificação
+
       if (classification.probabilidade <= 0.8) {
         return {
           ...classification,

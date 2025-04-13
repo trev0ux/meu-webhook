@@ -186,7 +186,7 @@ Exemplo: "Almoço R$ 50" ou "Recebi R$ 1000 do cliente"</Message>
       try {
         // Classificação unificada com a nova função
         const classification = await classifyTransaction(transacao.textoOriginal, user.perfil)
-
+        console.log(classification.status)
         if (classification.status === 'SUCCESS') {
           // Classificação com sucesso
           transacoesClassificadas.push({
