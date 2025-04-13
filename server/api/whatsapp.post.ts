@@ -80,6 +80,10 @@ Exemplos:
         }
       }
 
+      if (classification.status === 'LOW_CONFIDENCE') {
+        return requestNewInput()
+      }
+
       // Se a IA não conseguiu classificar com alta confiança
       const contextoDetectado = detectContext(message)
 
@@ -303,6 +307,19 @@ Exemplo: "Almoço R$ 50" ou "Recebi R$ 1000 do cliente"</Message>
       </Response>
     `
   }
+}
+
+function requestNewInput() {
+  const mensagemResposta = `
+  Não entendi o que você quiser, pode repetir novamente?
+  
+  Tente usar palavras dentro do contexto do Finia ou relacionado a suas finanças
+  `
+  return `
+    <Response>
+      <Message>${mensagemResposta.trim()}</Message>
+    </Response>
+  `
 }
 
 async function processExpenseSuccess(
