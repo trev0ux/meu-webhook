@@ -286,6 +286,7 @@ async function processarTransacao(message: string, user: any): Promise<string> {
       } else {
         return await salvarGasto(classificacao, descricao, valor, dataFormatada, user)
       }
+<<<<<<< HEAD
 
       if (classification.status === 'LOW_CONFIDENCE') {
         return requestNewInput()
@@ -364,6 +365,17 @@ Exemplo: "Almoço com cliente R$ 120" ou "Mercado para casa R$ 250"</Message>
           <Message>❌ Ocorreu um erro ao processar sua mensagem. Por favor, tente novamente com uma descrição clara.</Message>
         </Response>
       `
+=======
+    } else {
+      // Baixa confiança - pedir confirmação ao usuário
+      return await solicitarConfirmacaoClassificacao(
+        classificacao,
+        descricao,
+        valor,
+        dataFormatada,
+        user
+      )
+>>>>>>> b0f17797b969a4cea897800126f9e9ec2a616c39
     }
   } catch (error) {
     console.error('Erro ao classificar transação:', error)
@@ -1100,6 +1112,7 @@ Por favor, envie uma transação por vez ou separe cada uma em uma linha clara.
 
     for (const transacao of transacoes) {
       try {
+<<<<<<< HEAD
         // Classificação unificada com a nova função
         const classification = await classifyTransaction(transacao.textoOriginal, user.perfil)
         console.log(classification.status)
@@ -1115,6 +1128,23 @@ Por favor, envie uma transação por vez ou separe cada uma em uma linha clara.
         } else {
           // Classificação com baixa confiança, tenta usar o contexto
           const contextoDetectado = detectContext(transacao.textoOriginal)
+=======
+        // Classificar a transação
+        const classificacao = await classifyTransaction(
+          transacao.textoOriginal,
+          user.perfil,
+          user.preferencias
+        )
+
+        if (classificacao.status === 'SUCCESS') {
+          // Salvar na planilha (simulado para MVP)
+          // const sheetManager = new SheetManager(user.spreadsheet_id)
+          // if (classificacao.natureza === 'GANHO') {
+          //   await sheetManager.adicionarGanho(...)
+          // } else {
+          //   await sheetManager.adicionarGasto(...)
+          // }
+>>>>>>> b0f17797b969a4cea897800126f9e9ec2a616c39
 
           transacoesProcessadas++
 
@@ -1162,6 +1192,7 @@ Por favor, envie uma transação por vez ou separe cada uma em uma linha clara.
   }
 }
 
+<<<<<<< HEAD
 function requestNewInput() {
   const mensagemResposta = `
   Não entendi o que você quiser, pode repetir novamente?
@@ -1184,6 +1215,14 @@ async function processExpenseSuccess(
   lowConfidence = false
 ) {
   const { tipo, categoria, natureza, origem, probabilidade } = classification
+=======
+/**
+ * Processa comandos especiais (iniciados com !)
+ */
+async function processarComando(message: string, user: any): Promise<string> {
+  const partes = message.substring(1).split(' ')
+  const comando = partes[0].toLowerCase()
+>>>>>>> b0f17797b969a4cea897800126f9e9ec2a616c39
 
   switch (comando) {
     case 'ajuda':
