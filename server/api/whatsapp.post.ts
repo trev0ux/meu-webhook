@@ -286,6 +286,86 @@ async function processarTransacao(message: string, user: any): Promise<string> {
       } else {
         return await salvarGasto(classificacao, descricao, valor, dataFormatada, user)
       }
+<<<<<<< HEAD
+
+      if (classification.status === 'LOW_CONFIDENCE') {
+        return requestNewInput()
+      }
+
+      // Se a IA não conseguiu classificar com alta confiança
+      const contextoDetectado = detectContext(message)
+
+      // Tentar extrair possível origem/contexto
+      const extractedInfo = extractExpenseInfo(message)
+      const origemDetectada = extractedInfo.origin || 'Não especificada'
+
+      if (contextoDetectado !== 'INDEFINIDO') {
+        // Verificar palavras-chave para determinar se é receita ou despesa
+        if (
+          message.toLowerCase().includes('recebi') ||
+          message.toLowerCase().includes('ganho') ||
+          message.toLowerCase().includes('salário') ||
+          message.toLowerCase().includes('pagamento')
+        ) {
+          // Parece ser uma receita
+          const fallbackClassification = {
+            natureza: 'GANHO',
+            tipo: contextoDetectado,
+            categoria: contextoDetectado === 'PJ' ? 'Receita Empresarial' : 'Receita Pessoal',
+            origem: origemDetectada,
+            probabilidade: 0.6,
+            status: 'SUCCESS'
+          }
+          return await processIncomeSuccess(
+            fallbackClassification,
+            descricao,
+            valor,
+            dataFormatada,
+            user,
+            true
+          )
+        } else {
+          // Assume-se que é uma despesa (caso mais comum)
+          const fallbackClassification = {
+            natureza: 'GASTO',
+            tipo: contextoDetectado,
+            categoria: contextoDetectado === 'PJ' ? 'Despesa Empresarial' : 'Despesa Pessoal',
+            origem: origemDetectada,
+            probabilidade: 0.6,
+            status: 'SUCCESS'
+          }
+          return await processExpenseSuccess(
+            fallbackClassification,
+            descricao,
+            valor,
+            dataFormatada,
+            user,
+            true
+          )
+        }
+      }
+
+      // Caso realmente não consigamos classificar
+      return `
+        <Response>
+          <Message>⚠️ Não consegui classificar sua transação com certeza.
+          
+Por favor, reescreva incluindo palavras mais específicas como:
+- Para gastos empresariais: cliente, fornecedor, empresa, escritório
+- Para gastos pessoais: casa, mercado, pessoal, família 
+- Para receitas: pagamento, recebi, salário, freelance
+
+Exemplo: "Almoço com cliente R$ 120" ou "Mercado para casa R$ 250"</Message>
+        </Response>
+      `
+    } catch (error) {
+      console.error('Erro na classificação:', error)
+      return `
+        <Response>
+          <Message>❌ Ocorreu um erro ao processar sua mensagem. Por favor, tente novamente com uma descrição clara.</Message>
+        </Response>
+      `
+=======
     } else {
       // Baixa confiança - pedir confirmação ao usuário
       return await solicitarConfirmacaoClassificacao(
@@ -295,6 +375,7 @@ async function processarTransacao(message: string, user: any): Promise<string> {
         dataFormatada,
         user
       )
+>>>>>>> b0f17797b969a4cea897800126f9e9ec2a616c39
     }
   } catch (error) {
     console.error('Erro ao classificar transação:', error)
@@ -1031,6 +1112,23 @@ Por favor, envie uma transação por vez ou separe cada uma em uma linha clara.
 
     for (const transacao of transacoes) {
       try {
+<<<<<<< HEAD
+        // Classificação unificada com a nova função
+        const classification = await classifyTransaction(transacao.textoOriginal, user.perfil)
+        console.log(classification.status)
+        if (classification.status === 'SUCCESS') {
+          // Classificação com sucesso
+          transacoesClassificadas.push({
+            ...transacao,
+            tipo: classification.tipo,
+            categoria: classification.categoria,
+            origem: classification.origem || 'Não especificada',
+            natureza: classification.natureza === 'GASTO' ? 'despesa' : 'receita'
+          })
+        } else {
+          // Classificação com baixa confiança, tenta usar o contexto
+          const contextoDetectado = detectContext(transacao.textoOriginal)
+=======
         // Classificar a transação
         const classificacao = await classifyTransaction(
           transacao.textoOriginal,
@@ -1046,6 +1144,7 @@ Por favor, envie uma transação por vez ou separe cada uma em uma linha clara.
           // } else {
           //   await sheetManager.adicionarGasto(...)
           // }
+>>>>>>> b0f17797b969a4cea897800126f9e9ec2a616c39
 
           transacoesProcessadas++
 
@@ -1093,12 +1192,37 @@ Por favor, envie uma transação por vez ou separe cada uma em uma linha clara.
   }
 }
 
+<<<<<<< HEAD
+function requestNewInput() {
+  const mensagemResposta = `
+  Não entendi o que você quiser, pode repetir novamente?
+  
+  Tente usar palavras dentro do contexto do Finia ou relacionado a suas finanças
+  `
+  return `
+    <Response>
+      <Message>${mensagemResposta.trim()}</Message>
+    </Response>
+  `
+}
+
+async function processExpenseSuccess(
+  classification,
+  descricao,
+  valor,
+  dataFormatada,
+  user,
+  lowConfidence = false
+) {
+  const { tipo, categoria, natureza, origem, probabilidade } = classification
+=======
 /**
  * Processa comandos especiais (iniciados com !)
  */
 async function processarComando(message: string, user: any): Promise<string> {
   const partes = message.substring(1).split(' ')
   const comando = partes[0].toLowerCase()
+>>>>>>> b0f17797b969a4cea897800126f9e9ec2a616c39
 
   switch (comando) {
     case 'ajuda':
