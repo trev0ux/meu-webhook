@@ -9,16 +9,66 @@ import configJson from '../../../config/keywords.json'
 export function detectIsIncome(message: string, profile: string): boolean {
   const lowerMessage = message.toLowerCase()
 
+  // Palavras-chave universais para detecção de receitas
+  const universalIncomeKeywords = [
+    'recebi',
+    'receb',
+    'ganhei',
+    'ganho',
+    'entrou',
+    'salário',
+    'salario',
+    'pagamento',
+    'pagou',
+    'depositou',
+    'depósito',
+    'deposito',
+    'rendimento',
+    'rendeu',
+    'faturei',
+    'lucro',
+    'comissão',
+    'comissao',
+    'fatura',
+    'faturamento',
+    'honorário',
+    'honorarios',
+    'venda',
+    'vendido'
+  ]
+
+  // Verificar primeiro as palavras-chave universais de receita
+  if (universalIncomeKeywords.some((keyword) => lowerMessage.includes(keyword))) {
+    return true
+  }
+
+  // Se não encontrou nas universais, verificar nas específicas do perfil
   let incomeKeywords = []
 
   if (profile === 'pessoa_fisica') {
     incomeKeywords = configJson.classificacao.palavrasChaveGanhosPF
   } else {
-    incomeKeywords = configJson.classificacao.palavrasChaveGanhosPJ
+    // Combinar todas as palavras-chave de ganhos em caso de perfil empresarial
+    incomeKeywords = [
+      ...configJson.classificacao.palavrasChaveGanhosPJ,
+      ...configJson.classificacao.palavrasChaveGanhosPF
+    ]
   }
 
   // Verificar se alguma palavra-chave de receita está presente
-  return incomeKeywords.some((keyword) => lowerMessage.includes(keyword))
+  const hasIncomeKeyword = incomeKeywords.some((keyword) => lowerMessage.includes(keyword))
+
+  // Padrões adicionais que sugerem receita
+  const incomePatterns = [
+    /r\$\s*\d+[\.,]?\d*\s*(receb|ganhei|entrou|pagou)/i, // "R$ 100 recebi"
+    /(cliente|empresa)\s+.*\s+r\$\s*\d+[\.,]?\d*/i, // "Cliente xyz R$ 100"
+    /pix\s+.*\s+r\$\s*\d+[\.,]?\d*/i, // "Pix de fulano R$ 100"
+    /r\$\s*\d+[\.,]?\d*\s+(d[eo]|pelo)\s+/i // "R$ 100 do cliente"
+  ]
+
+  const matchesIncomePattern = incomePatterns.some((pattern) => pattern.test(lowerMessage))
+
+  return hasIncomeKeyword || matchesIncomePattern
 }
 
 export function detectIsExpense(message: string, profile: string): boolean {

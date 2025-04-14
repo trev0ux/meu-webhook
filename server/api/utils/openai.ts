@@ -40,6 +40,7 @@ function parseCleanJSON(inputString) {
  * @param profile Perfil do usuário ('pessoa_fisica' ou 'empresario_individual')
  * @returns Objeto com a classificação completa
  */
+// Melhoria na função classifyTransaction em server/api/utils/openai.ts
 export async function classifyTransaction(message: string, profile: string) {
   const openai = getOpenAIClient()
 
@@ -51,17 +52,20 @@ export async function classifyTransaction(message: string, profile: string) {
   const categoriasPJ = configJson.classificacao.categoriasPJ.join(', ')
   const categoriasPF = configJson.classificacao.categoriasPF.join(', ')
 
-  // Sistema prompt para classificação unificada, incluindo origem/contexto
+  // Sistema prompt reforçado para reconhecimento de ganhos
   const systemPrompt = `
-  Você é um assistente financeiro especializado em classificar transações financeiras.
+  Você é um assistente financeiro especializado em classificar transações financeiras, com foco especial em distinguir entre GASTOS e GANHOS.
   
   INSTRUÇÕES IMPORTANTES:
   1. Determine se a transação é um GASTO (saída de dinheiro) ou GANHO (entrada de dinheiro).
+     - GANHOS são identificados por palavras como: recebi, pagamento, entrou, ganhei, depósito, vendas
+     - GASTOS são identificados por palavras como: comprei, paguei, gastei, compra
+  
   2. Classifique como PJ (empresarial) ou PF (pessoal).
   3. Atribua uma categoria específica.
   4. Extraia a ORIGEM ou CONTEXTO da transação. 
-     - Para gastos: de onde veio o produto/serviço ou onde foi realizado (ex: restaurante, loja, fornecedor)
-     - Para ganhos: quem pagou, de onde veio o dinheiro (ex: cliente específico, empresa, banco)
+     - Para gastos: de onde veio o produto/serviço ou onde foi realizado
+     - Para ganhos: quem pagou, de onde veio o dinheiro
   5. Forneça um nível de confiança na sua classificação.
   
   CONTEXTO - PALAVRAS-CHAVE:
@@ -86,28 +90,26 @@ export async function classifyTransaction(message: string, profile: string) {
   
   REGRAS DE CLASSIFICAÇÃO:
   1. Para GASTOS vs. GANHOS:
+     - REGRA CRÍTICA: Se a mensagem contém apenas um valor (ex: "R$ 200") sem contexto claro, NÃO classifique automaticamente.
+       Neste caso, indique baixa confiança (probabilidade < 0.4).
      - Gastos: envolvem pagamento, compra, despesa, saída de dinheiro
-     - Ganhos: envolvem recebimento, venda, receita, entrada de dinheiro
+     - Ganhos: envolvem recebimento, venda, receita, entrada de dinheiro, termos como "recebi", "pagamento", "depósito"
   
   2. Para PJ vs. PF:
      - PJ: relacionado à atividade profissional, negócio, empresa, clientes
      - PF: relacionado a consumo pessoal, lazer, família, itens domésticos
-     
-  3. Para ORIGEM/CONTEXTO:
-     - Seja específico, extraindo exatamente o nome do estabelecimento, cliente, empresa ou fonte
-     - Preserve a grafia original de nomes próprios mencionados
-     - Se não houver menção específica, infira a partir do contexto (ex: "Almoço" → "Restaurante")
-     - Para ganhos sem origem clara, use termos como "Cliente não especificado" ou "Fonte não identificada"
   `
 
-  // Prompt do usuário para classificação unificada com origem
+  // Prompt do usuário melhorado
   const userPrompt = `
   Classifique a seguinte transação financeira, indicando:
   1. Se é um GASTO (saída de dinheiro) ou GANHO (entrada de dinheiro)
   2. Se é PJ (empresarial) ou PF (pessoal)
   3. A categoria específica
-  4. A origem/contexto da transação (estabelecimento, cliente, fonte do dinheiro)
+  4. A origem/contexto da transação
   5. O nível de confiança
+  
+  Se a mensagem for muito curta ou ambígua para classificação precisa, defina uma probabilidade baixa (<0.4).
   
   Responda APENAS em formato JSON:
   {
@@ -138,7 +140,6 @@ export async function classifyTransaction(message: string, profile: string) {
       const classification = parseCleanJSON(responseContent)
 
       // Determinar se temos confiança suficiente na classificação
-
       if (classification.probabilidade <= 0.8) {
         return {
           ...classification,
